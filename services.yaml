@@ -1,0 +1,28 @@
+set_hold_time:
+  description: "Set the hold time for the thermostat."
+  target:
+    entity:
+      domain: climate
+  fields:
+    time_period:
+      description: "Time period for hold."
+      example: "01:00:00"
+      required: true
+      selector:
+        text:
+
+set_room_priority:
+  description: "Set the room priority for the thermostat to one or more rooms."
+  target:
+    entity:
+      domain: climate
+  fields:
+    room_names:
+      description: "A list of room names to prioritize."
+      example:
+        - "Living Room"
+        - "Bedroom"
+      required: true
+      selector:
+        object:
+
