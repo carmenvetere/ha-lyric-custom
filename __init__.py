@@ -11,6 +11,7 @@ from aiolyric.exceptions import LyricAuthenticationException, LyricException
 from aiolyric.objects.device import LyricDevice
 from aiolyric.objects.location import LyricLocation
 from aiolyric.objects.priority import LyricAccessory, LyricRoom
+from aiolyric.const import BASE_URL
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -60,6 +61,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     client_id = implementation.client_id
     lyric = Lyric(client, client_id)
+
+    async def set_room_priority(
+        location: LyricLocation,
+        device: LyricDevice,
+        priority_type: str,
+        selected_rooms: list[int],
+    ) -> None:
+        """Set room priority using PUT (aiolyric uses POST which is wrong)."""
+        selected_rooms = [int(r) for r in selected_rooms]
+        data = {
+            "currentPriority": {
+                "priorityType": priority_type,
+                "selectedRooms": selected_rooms
+            }
+        }
+        url = (
+            f"{BASE_URL}/devices/thermostats/{device.device_id}/priority"
+            f"?apikey={lyric.client_id}&locationId={location.location_id}"
+        )
+        await lyric._client.put(url, json=data)
 
     async def async_update_data(force_refresh_token: bool = False) -> Lyric:
         """Fetch data from Lyric."""
@@ -156,6 +177,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=300),
     )
 
+    # Store custom priority function for entities to use
+    coordinator.set_room_priority = set_room_priority
+
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
@@ -191,7 +215,8 @@ class LyricEntity(CoordinatorEntity[DataUpdateCoordinator[Lyric]]):
         self._mac_id = device.mac_id
         self._update_thermostat = coordinator.data.update_thermostat
         self._update_fan = coordinator.data.update_fan
-        self._update_priority = coordinator.data.update_priority
+        # Use custom PUT-based priority update (aiolyric uses POST which is wrong)
+        self._update_priority = coordinator.set_room_priority
 
     @property
     def unique_id(self) -> str:
