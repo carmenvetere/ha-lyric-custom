@@ -80,7 +80,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             f"{BASE_URL}/devices/thermostats/{device.device_id}/priority"
             f"?apikey={lyric.client_id}&locationId={location.location_id}"
         )
-        await lyric._client.put(url, json=data)
+
+        # Get access token and make PUT request with proper auth headers
+        access_token = await client.async_get_access_token()
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        async with session.put(url, headers=headers, json=data) as response:
+            if response.status >= 400:
+                error_text = await response.text()
+                raise LyricException(f"Failed to set priority: {response.status} - {error_text}")
 
     async def async_update_data(force_refresh_token: bool = False) -> Lyric:
         """Fetch data from Lyric."""
