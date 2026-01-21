@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from http import HTTPStatus
 import logging
 
 from aiohttp.client_exceptions import ClientResponseError
@@ -12,7 +11,6 @@ from aiolyric.exceptions import LyricAuthenticationException, LyricException
 from aiolyric.objects.device import LyricDevice
 from aiolyric.objects.location import LyricLocation
 from aiolyric.objects.priority import LyricAccessory, LyricRoom
-from aiolyric.const import BASE_URL
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -63,178 +61,76 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client_id = implementation.client_id
     lyric = Lyric(client, client_id)
 
-    async def set_room_priority(
-        self,
-        location_id: int,
-        device_id: str,
-        priority_type: str = "PickARoom",
-        selected_rooms: list = None,
-    ) -> None:
-        """Set room priority for a thermostat using direct HTTP request."""
-        if selected_rooms is None:
-            selected_rooms = []
-
-        # Ensure room IDs are integers
-        selected_rooms = [int(room_id) for room_id in selected_rooms]
-
-        data = {
-            "currentPriority": {
-                "priorityType": priority_type,
-                "selectedRooms": selected_rooms
-            }
-        }
-
-        url = f"{BASE_URL}/devices/thermostats/{device_id}/priority?apikey={self.client_id}&locationId={location_id}"
-        _LOGGER.debug("Setting room priority - URL: %s, Data: %s", url, data)
-
-        try:
-            # Get the access token from the client
-            access_token = await self._client.async_get_access_token()
-
-            # Create headers with the access token
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
-            }
-
-            # Use the session from the client to make a direct PUT request
-            async with self._client._session.put(url, headers=headers, json=data) as response:
-                # Any 2xx status code is success
-                if 200 <= response.status < 300:
-                    _LOGGER.debug("Successfully set room priority")
-                    return True
-                else:
-                    _LOGGER.error(
-                        "Error setting priority - Status: %s", 
-                        response.status
-                    )
-                    raise LyricException(
-                        f"Failed to set priority: {response.status}"
-                    )
-
-        except Exception as e:
-            _LOGGER.error("Error setting room priority: %s", str(e))
-            raise
-
     async def async_update_data(force_refresh_token: bool = False) -> Lyric:
         """Fetch data from Lyric."""
         try:
-            # ADDED
-            _LOGGER.debug(
-                "Starting Lyric data update (force_refresh_token=%s)",
-                force_refresh_token
-            )
-
             if not force_refresh_token:
                 await oauth_session.async_ensure_token_valid()
             else:
                 await oauth_session.force_refresh_token()
 
-            # ADDED
-            _LOGGER.debug("Token is valid; now calling lyric.get_locations()")
-
             await lyric.get_locations()
 
-            # ADDED
-            _LOGGER.debug("Lyric locations after get_locations(): %s", lyric.locations)
+            # Fetch room data for all LCC thermostats in parallel
+            lcc_devices = [
+                (location, device)
+                for location in lyric.locations
+                for device in location.devices
+                if device.device_class == "Thermostat"
+                and device.device_id.startswith("LCC")
+            ]
 
-            await asyncio.gather(
-                *(
-                    lyric.get_thermostat_rooms(location.location_id, device.device_id)
-                    for location in lyric.locations
-                    for device in location.devices
-                    if device.device_class == "Thermostat"
-                    and device.device_id.startswith("LCC")
+            if lcc_devices:
+                await asyncio.gather(
+                    *(
+                        lyric.get_thermostat_rooms(location.location_id, device.device_id)
+                        for location, device in lcc_devices
+                    )
                 )
-            )
 
-            # ADDED
-            _LOGGER.debug(
-                "Lyric rooms_dict after get_thermostat_rooms: %s", lyric.rooms_dict
-            )
+                # Fetch priority data for all devices in parallel
+                async def fetch_priority(location: LyricLocation, device: LyricDevice) -> None:
+                    """Fetch and store priority data for a device."""
+                    try:
+                        # Use the rooms data which includes priority info from get_thermostat_rooms
+                        if device.mac_id not in lyric.rooms_dict:
+                            return
 
-            # EXTRA LOGGING ADDED - Dump each location & device fields
-            for location in lyric.locations:
-                _LOGGER.debug("Location ID %s -> %s", location.location_id, location.__dict__)
+                        rooms = lyric.rooms_dict[device.mac_id]
+                        if not rooms:
+                            return
 
-                for device in location.devices:
-                    _LOGGER.debug("Device %s raw data: %s", device.device_id, device.__dict__)
+                        # Get priority from first room's data (it's the same for all rooms)
+                        first_room = next(iter(rooms.values()))
+                        priority_data = getattr(first_room, 'priority', None)
 
-                    # If the objects have sub-objects like changeable_values, settings, etc.
-                    if getattr(device, "changeable_values", None):
-                        _LOGGER.debug(
-                            "Device %s changeable_values: %s",
+                        if priority_data:
+                            selected_rooms = getattr(priority_data, 'selected_rooms', [])
+                            priority_type = getattr(priority_data, 'priority_type', None)
+                        else:
+                            # Fallback: check room attributes
+                            selected_rooms = first_room.attributes.get("priority_data", {}).get("selected_rooms", [])
+                            priority_type = first_room.attributes.get("priority_data", {}).get("type")
+
+                        # Store priority data in all rooms
+                        for room in rooms.values():
+                            room.attributes["priority_data"] = {
+                                "type": priority_type,
+                                "selected_rooms": selected_rooms
+                            }
+
+                    except Exception as err:
+                        _LOGGER.warning(
+                            "Error processing priority data for device %s: %s",
                             device.device_id,
-                            device.changeable_values.__dict__
-                            if hasattr(device.changeable_values, "__dict__")
-                            else str(device.changeable_values),
-                        )
-                    if getattr(device, "settings", None):
-                        _LOGGER.debug(
-                            "Device %s settings: %s",
-                            device.device_id,
-                            device.settings.__dict__
-                            if hasattr(device.settings, "__dict__")
-                            else str(device.settings),
+                            err,
                         )
 
-            # Get priority data for each device
-            for location in lyric.locations:
-                for device in location.devices:
-                    if (
-                        device.device_class == "Thermostat"
-                        and device.device_id.startswith("LCC")
-                    ):
-                        try:
-                            url = (
-                                f"{BASE_URL}/devices/thermostats/{device.device_id}/priority"
-                                f"?apikey={lyric.client_id}&locationId={location.location_id}"
-                            )
-                            _LOGGER.debug(
-                                "Requesting priority data for device %s at %s",
-                                device.device_id,
-                                url
-                            )
-
-                            response = await device.client.get(url)
-                            priority_data = await response.json()
-
-                            # ADDED
-                            _LOGGER.debug(
-                                "Priority data for device %s: %s",
-                                device.device_id,
-                                priority_data
-                            )
-
-                            if device.mac_id in lyric.rooms_dict:
-                                current_priority = priority_data.get("currentPriority", {})
-                                selected_rooms = current_priority.get("selectedRooms", [])
-                                priority_type = current_priority.get("priorityType")
-
-                                _LOGGER.debug(
-                                    "Retrieved priority for device %s: type=%s, rooms=%s",
-                                    device.device_id,
-                                    priority_type,
-                                    selected_rooms
-                                )
-
-                                # Store priority data in rooms
-                                rooms = lyric.rooms_dict[device.mac_id]
-                                for room in rooms.values():
-                                    room.attributes["priority_data"] = {
-                                        "type": priority_type,
-                                        "selected_rooms": selected_rooms
-                                    }
-
-                        except Exception as e:
-                            _LOGGER.error(
-                                "Error getting priority data for device %s: %s",
-                                device.device_id,
-                                str(e),
-                            )
+                await asyncio.gather(
+                    *(fetch_priority(location, device) for location, device in lcc_devices)
+                )
 
         except LyricAuthenticationException as exception:
-            _LOGGER.debug("Authentication failed. Attempting to refresh token.")
             if not force_refresh_token:
                 return await async_update_data(force_refresh_token=True)
             raise ConfigEntryAuthFailed from exception
@@ -242,9 +138,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise UpdateFailed(exception) from exception
 
         return lyric
-
-    # Add the set_room_priority method to the Lyric instance
-    lyric.set_room_priority = set_room_priority.__get__(lyric)
 
     coordinator = DataUpdateCoordinator[Lyric](
         hass,
@@ -289,6 +182,7 @@ class LyricEntity(CoordinatorEntity[DataUpdateCoordinator[Lyric]]):
         self._mac_id = device.mac_id
         self._update_thermostat = coordinator.data.update_thermostat
         self._update_fan = coordinator.data.update_fan
+        self._update_priority = coordinator.data.update_priority
 
     @property
     def unique_id(self) -> str:

@@ -292,12 +292,6 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
         """Return the hvac mode."""
         lyric_mode = self.device.changeable_values.mode
         return HVAC_MODES.get(lyric_mode, HVACMode.OFF)
-        
-        _LOGGER.debug(
-            "Device %s raw mode from changeable_values: %s",
-            self.device.mac_id,
-            self.device.changeable_values.mode
-         )
 
     @property
     def preset_mode(self) -> str | None:
@@ -513,31 +507,26 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
 
     async def async_set_room_priority(self, room_names: list[str]) -> None:
         """Set room priority."""
-        _LOGGER.debug("Set room priority: %s", room_names)
         try:
-            # Get rooms data from coordinator
             rooms = self.coordinator.data.rooms_dict.get(self.device.mac_id, {})
-            
+
             # Build list of room IDs that match provided names
-            room_ids = []
-            for room_id, room in rooms.items():
-                if room.room_name in room_names:
-                    room_ids.append(room_id)
-                    
+            room_ids = [
+                int(room_id) for room_id, room in rooms.items()
+                if room.room_name in room_names
+            ]
+
             if not room_ids:
                 _LOGGER.error("No valid room names provided")
                 return
-                
-            # Call the API to set priority
-            await self.coordinator.data.set_room_priority(
-                self.location.location_id,
-                self.device.device_id,
-                priority_type="PickARoom",
-                selected_rooms=room_ids
+
+            await self._update_priority(
+                self.location,
+                self.device,
+                "PickARoom",
+                room_ids,
             )
-            
             await self.coordinator.async_request_refresh()
-            
         except LYRIC_EXCEPTIONS as exception:
-            _LOGGER.error("Failed to set room priority: %s", str(exception))
+            _LOGGER.error("Failed to set room priority: %s", exception)
 
