@@ -81,14 +81,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ]
 
             if lcc_devices:
+                # Fetch room data for each device, handling failures gracefully
+                async def fetch_rooms(location: LyricLocation, device: LyricDevice) -> None:
+                    """Fetch room data for a device, handling API errors."""
+                    try:
+                        await lyric.get_thermostat_rooms(location.location_id, device.device_id)
+                    except Exception as err:
+                        _LOGGER.warning(
+                            "Failed to fetch room data for device %s: %s",
+                            device.device_id,
+                            err,
+                        )
+
                 await asyncio.gather(
-                    *(
-                        lyric.get_thermostat_rooms(location.location_id, device.device_id)
-                        for location, device in lcc_devices
-                    )
+                    *(fetch_rooms(location, device) for location, device in lcc_devices)
                 )
 
-                # Fetch priority data for all devices in parallel
+                # Process priority data for all devices
                 async def fetch_priority(location: LyricLocation, device: LyricDevice) -> None:
                     """Fetch and store priority data for a device."""
                     try:
