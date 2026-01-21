@@ -128,11 +128,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     *(fetch_rooms(location, device) for location, device in lcc_devices)
                 )
 
-                # Process priority data for all devices
+                # Fetch and store priority data for all devices
                 async def fetch_priority(location: LyricLocation, device: LyricDevice) -> None:
-                    """Fetch and store priority data for a device."""
+                    """Fetch priority data via API and store in room attributes."""
                     try:
-                        # Use the rooms data which includes priority info from get_thermostat_rooms
                         if device.mac_id not in lyric.rooms_dict:
                             return
 
@@ -140,28 +139,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         if not rooms:
                             return
 
-                        # Get priority from first room's data (it's the same for all rooms)
-                        first_room = next(iter(rooms.values()))
-                        priority_data = getattr(first_room, 'priority', None)
+                        # Make API call to get priority data
+                        url = (
+                            f"{BASE_URL}/devices/thermostats/{device.device_id}/priority"
+                            f"?apikey={lyric.client_id}&locationId={location.location_id}"
+                        )
+                        access_token = await client.async_get_access_token()
+                        headers = {
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        }
 
-                        if priority_data:
-                            selected_rooms = getattr(priority_data, 'selected_rooms', [])
-                            priority_type = getattr(priority_data, 'priority_type', None)
-                        else:
-                            # Fallback: check room attributes
-                            selected_rooms = first_room.attributes.get("priority_data", {}).get("selected_rooms", [])
-                            priority_type = first_room.attributes.get("priority_data", {}).get("type")
+                        async with session.get(url, headers=headers) as response:
+                            if response.status >= 400:
+                                _LOGGER.warning(
+                                    "Failed to get priority for device %s: %s",
+                                    device.device_id,
+                                    response.status,
+                                )
+                                return
 
-                        # Store priority data in all rooms
-                        for room in rooms.values():
-                            room.attributes["priority_data"] = {
-                                "type": priority_type,
-                                "selected_rooms": selected_rooms
-                            }
+                            priority_response = await response.json()
+                            current_priority = priority_response.get("currentPriority", {})
+                            selected_rooms = current_priority.get("selectedRooms", [])
+                            priority_type = current_priority.get("priorityType")
+
+                            # Store priority data in all rooms for this device
+                            for room in rooms.values():
+                                room.attributes["priority_data"] = {
+                                    "type": priority_type,
+                                    "selected_rooms": selected_rooms,
+                                }
 
                     except Exception as err:
                         _LOGGER.warning(
-                            "Error processing priority data for device %s: %s",
+                            "Error fetching priority data for device %s: %s",
                             device.device_id,
                             err,
                         )
