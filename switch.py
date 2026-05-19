@@ -104,22 +104,12 @@ class LyricEmergencyHeatSwitch(LyricDeviceEntity, SwitchEntity):
         """Return true if emergency heat is enabled."""
         try:
             device = self.device
-            is_emergency = (
+            return (
                 device.changeable_values.emergency_heat_active or
                 device.settings.attributes.get("specialMode", {}).get("emergencyHeatActive", False)
             )
-            _LOGGER.debug(
-                "%s emergency heat status check: mode=%s, emergency_heat_active=%s, special_mode=%s, is_emergency=%s",
-                self.name,
-                device.changeable_values.mode,
-                device.changeable_values.emergency_heat_active,
-                device.settings.attributes.get("specialMode", {}),
-                is_emergency
-            )
-            return is_emergency
         except Exception as e:
-            _LOGGER.error("Error checking emergency heat status: %s", str(e))
-            _LOGGER.error("Device values: %s", self.device.changeable_values.__dict__)
+            _LOGGER.error("Error checking emergency heat status: %s", e)
             return False
 
     @property
@@ -138,63 +128,26 @@ class LyricEmergencyHeatSwitch(LyricDeviceEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on emergency heat."""
         try:
-            _LOGGER.debug(
-                "Turning ON emergency heat for %s (current mode: %s, emergency_heat_active: %s)",
-                self.name,
-                self.device.changeable_values.mode,
-                self.device.changeable_values.emergency_heat_active
-            )
-
-            response = await self.coordinator.data.update_thermostat(
+            await self._update_thermostat(
                 self.location,
                 self.device,
                 mode=LYRIC_HVAC_MODE_EMERGENCY_HEAT,
             )
-            
-            _LOGGER.debug("Emergency heat ON response: %s", response)
             await self.coordinator.async_request_refresh()
-
-            _LOGGER.debug(
-                "After refresh - Mode: %s, Emergency Heat Active: %s, Special Mode: %s",
-                self.device.changeable_values.mode,
-                self.device.changeable_values.emergency_heat_active,
-                self.device.settings.attributes.get("specialMode", {})
-            )
-
-        except Exception as exception:
-            _LOGGER.error("Failed to enable emergency heat: %s", str(exception))
-            _LOGGER.exception("Detailed error information:")
+        except LYRIC_EXCEPTIONS as exception:
+            _LOGGER.error("Failed to enable emergency heat: %s", exception)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off emergency heat."""
         try:
-            _LOGGER.debug(
-                "Turning OFF emergency heat for %s (current mode: %s, emergency_heat_active: %s)",
-                self.name,
-                self.device.changeable_values.mode,
-                self.device.changeable_values.emergency_heat_active
-            )
-
-            # Return to regular heat mode when disabling emergency heat
-            response = await self.coordinator.data.update_thermostat(
+            await self._update_thermostat(
                 self.location,
                 self.device,
                 mode="Heat",
             )
-            
-            _LOGGER.debug("Emergency heat OFF response: %s", response)
             await self.coordinator.async_request_refresh()
-
-            _LOGGER.debug(
-                "After refresh - Mode: %s, Emergency Heat Active: %s, Special Mode: %s",
-                self.device.changeable_values.mode,
-                self.device.changeable_values.emergency_heat_active,
-                self.device.settings.attributes.get("specialMode", {})
-            )
-
-        except Exception as exception:
-            _LOGGER.error("Failed to disable emergency heat: %s", str(exception))
-            _LOGGER.exception("Detailed error information:")
+        except LYRIC_EXCEPTIONS as exception:
+            _LOGGER.error("Failed to disable emergency heat: %s", exception)
 
 
 class LyricRoomPrioritySwitch(LyricDeviceEntity, SwitchEntity):
@@ -235,25 +188,11 @@ class LyricRoomPrioritySwitch(LyricDeviceEntity, SwitchEntity):
             if not room:
                 return False
 
-            # Get priority data from room attributes
             priority_data = room.attributes.get("priority_data", {})
             selected_rooms = priority_data.get("selected_rooms", [])
-            priority_type = priority_data.get("type")
-            
-            is_selected = str(self._room_id) in map(str, selected_rooms)
-            _LOGGER.debug(
-                "Room %s priority check: id=%s, selected_rooms=%s, priority_type=%s, is_selected=%s",
-                room.room_name, 
-                self._room_id, 
-                selected_rooms,
-                priority_type,
-                is_selected
-            )
-            
-            return is_selected
-
+            return str(self._room_id) in map(str, selected_rooms)
         except Exception as e:
-            _LOGGER.error("Error checking priority status: %s", str(e))
+            _LOGGER.error("Error checking priority status: %s", e)
             return False
 
     @property
@@ -283,62 +222,38 @@ class LyricRoomPrioritySwitch(LyricDeviceEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on room priority."""
         try:
-            device = self.device
-            location = self.location
-            
             # Get current priority data and append room
             priority_data = self.room.attributes.get("priority_data", {})
             current_rooms = list(priority_data.get("selected_rooms", []))
             if str(self._room_id) not in map(str, current_rooms):
-                current_rooms.append(self._room_id)
+                current_rooms.append(int(self._room_id))
 
-            _LOGGER.debug(
-                "Setting priority ON for %s with rooms %s",
-                self._room.room_name,
-                current_rooms
+            await self._update_priority(
+                self.location,
+                self.device,
+                PRIORITY_TYPE_PICKROOM,
+                current_rooms,
             )
-
-            await self.coordinator.data.set_room_priority(
-                location.location_id,
-                device.device_id,
-                priority_type=PRIORITY_TYPE_PICKROOM,
-                selected_rooms=current_rooms
-            )
-            
             await self.coordinator.async_request_refresh()
-
-        except Exception as exception:
-            _LOGGER.error("Failed to set room priority: %s", str(exception))
-            _LOGGER.exception("Detailed error information:")
+        except LYRIC_EXCEPTIONS as exception:
+            _LOGGER.error("Failed to set room priority: %s", exception)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off room priority."""
         try:
-            device = self.device
-            location = self.location
-
             # Get current priority data and remove room
             priority_data = self.room.attributes.get("priority_data", {})
             current_rooms = list(priority_data.get("selected_rooms", []))
-            current_rooms = [r for r in current_rooms if str(r) != str(self._room_id)]
-
-            _LOGGER.debug(
-                "Setting priority OFF for %s with remaining rooms %s",
-                self._room.room_name,
-                current_rooms
-            )
+            current_rooms = [int(r) for r in current_rooms if str(r) != str(self._room_id)]
 
             priority_type = PRIORITY_TYPE_WHOLEHOUSE if not current_rooms else PRIORITY_TYPE_PICKROOM
-            
-            await self.coordinator.data.set_room_priority(
-                location.location_id,
-                device.device_id,
-                priority_type=priority_type,
-                selected_rooms=current_rooms
-            )
-            
-            await self.coordinator.async_request_refresh()
 
-        except Exception as exception:
-            _LOGGER.error("Failed to clear room priority: %s", str(exception))
-            _LOGGER.exception("Detailed error information:")
+            await self._update_priority(
+                self.location,
+                self.device,
+                priority_type,
+                current_rooms,
+            )
+            await self.coordinator.async_request_refresh()
+        except LYRIC_EXCEPTIONS as exception:
+            _LOGGER.error("Failed to clear room priority: %s", exception)

@@ -1,7 +1,7 @@
 {
   "domain": "lyric_custom",
   "name": "Honeywell Lyric Custom",
-  "version": "2.0",
+  "version": "2.1",
   "codeowners": ["@timmo001"],
   "config_flow": true,
   "dependencies": ["application_credentials"],
@@ -23,5 +23,5 @@
   "iot_class": "cloud_polling",
   "loggers": ["aiolyric"],
   "quality_scale": "silver",
-  "requirements": ["aiolyric>=2.0.1"]
+  "requirements": ["aiolyric>=2.0.2"]
 }
