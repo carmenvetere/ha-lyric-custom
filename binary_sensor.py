@@ -1,8 +1,10 @@
-"""Support for Honeywell Lyric motion and ventilation sensors."""
+"""Support for Honeywell Lyric motion, ventilation, and demand-response sensors."""
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiolyric import Lyric
 from aiolyric.objects.device import LyricDevice
@@ -17,6 +19,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from . import LyricDeviceEntity, LyricAccessoryEntity
 from .const import DOMAIN
@@ -47,13 +50,22 @@ async def async_setup_entry(
                             device,
                         )
                     )
-                
+
+                # Demand-response sensor is always created; utility DR events
+                # arrive per-device and may not be present at setup time.
+                _LOGGER.debug(
+                    "Creating demand response sensor for device %s", device.name
+                )
+                entities.append(
+                    LyricDemandResponseSensor(coordinator, location, device)
+                )
+
                 # Add motion sensors
                 rooms = coordinator.data.rooms_dict.get(device.mac_id, {})
                 for room_id, room in rooms.items():
                     for accessory in room.accessories:
                         if (
-                            accessory.type == "IndoorAirSensor" 
+                            accessory.type == "IndoorAirSensor"
                             and not accessory.exclude_motion
                         ):
                             _LOGGER.debug(
@@ -131,6 +143,90 @@ class LyricVentilationRequestSensor(LyricDeviceEntity, BinarySensorEntity):
         except Exception as e:
             _LOGGER.error("Error getting ventilation attributes: %s", str(e))
             return {}
+
+
+class LyricDemandResponseSensor(LyricDeviceEntity, BinarySensorEntity):
+    """Binary sensor that turns on while a utility Demand Response event is active."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[Lyric],
+        location: LyricLocation,
+        device: LyricDevice,
+    ) -> None:
+        """Initialize the DR event sensor."""
+        super().__init__(
+            coordinator,
+            location,
+            device,
+            f"{device.mac_id}_dr_event_active",
+        )
+        self._attr_name = f"{device.name} DR Event Active"
+        self._attr_unique_id = f"{device.mac_id}_dr_event_active"
+
+    def _dr_event(self) -> dict[str, Any] | None:
+        event = self.device.attributes.get("drEvent")
+        return event if isinstance(event, dict) else None
+
+    def _location_tz(self) -> ZoneInfo:
+        # DR event start/end times are naive ISO strings expressed in the
+        # location's local timezone. Fall back to HA's configured tz if the
+        # location tz is missing or unknown to zoneinfo.
+        tz_name = self.location.iana_time_zone
+        if tz_name:
+            try:
+                return ZoneInfo(tz_name)
+            except ZoneInfoNotFoundError:
+                pass
+        return dt_util.DEFAULT_TIME_ZONE
+
+    def _parse(self, iso: str | None) -> datetime | None:
+        if not iso:
+            return None
+        try:
+            return datetime.fromisoformat(iso).replace(tzinfo=self._location_tz())
+        except ValueError:
+            return None
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if a DR event is currently in progress for this device."""
+        event = self._dr_event()
+        if not event:
+            return False
+        start = self._parse(event.get("startTime"))
+        end = self._parse(event.get("endTime"))
+        if not start or not end:
+            return False
+        return start <= dt_util.utcnow() <= end
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the event details so automations can react to specifics."""
+        event = self._dr_event()
+        if not event:
+            return {}
+        active_seq = event.get("activeSequenceNumber")
+        current_phase_end = next(
+            (
+                iv.get("phaseEndTime")
+                for iv in event.get("intervals", [])
+                if iv.get("sequenceNumber") == active_seq
+            ),
+            None,
+        )
+        return {
+            "event_id": event.get("eventID"),
+            "start_time": event.get("startTime"),
+            "end_time": event.get("endTime"),
+            "cool_setpoint_limit_min": event.get("coolSetpointLimitMin"),
+            "opt_outable": event.get("optOutable"),
+            "active_sequence_number": active_seq,
+            "current_phase_end_time": current_phase_end,
+            "intervals": event.get("intervals", []),
+        }
 
 
 class LyricMotionSensor(LyricAccessoryEntity, BinarySensorEntity):
