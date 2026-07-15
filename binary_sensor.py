@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiolyric import Lyric
 from aiolyric.objects.device import LyricDevice
@@ -50,13 +51,18 @@ async def async_setup_entry(
                         )
                     )
 
-                # Demand-response sensor is always created; utility DR events
-                # arrive per-device and may not be present at setup time.
+                # Demand-response sensors are always created; utility DR
+                # events arrive per-device and may not be present at setup time.
                 _LOGGER.debug(
-                    "Creating demand response sensor for device %s", device.name
+                    "Creating demand response sensors for device %s", device.name
                 )
                 entities.append(
                     LyricDemandResponseSensor(coordinator, location, device)
+                )
+                entities.append(
+                    LyricDemandResponseScheduledTodaySensor(
+                        coordinator, location, device
+                    )
                 )
 
                 # Add motion sensors
@@ -215,6 +221,75 @@ class LyricDemandResponseSensor(LyricDeviceEntity, BinarySensorEntity):
             "active_sequence_number": active_seq,
             "current_phase_end_time": current_phase_end,
             "intervals": event.get("intervals", []),
+        }
+
+
+class LyricDemandResponseScheduledTodaySensor(LyricDemandResponseSensor):
+    """On if a DR event's start time falls on today's local calendar date.
+
+    Utilities typically publish the drEvent block hours or a day before
+    startTime, so this sensor flips on earlier than the 'active' sensor,
+    giving automations a runway to prep (pre-cool, notify, defer loads).
+    Turns off when the local calendar day rolls over, not when the event ends.
+    """
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[Lyric],
+        location: LyricLocation,
+        device: LyricDevice,
+    ) -> None:
+        # Skip the parent's __init__ (which hardcodes the _active suffix); go
+        # straight to the base LyricDeviceEntity with our own key.
+        LyricDeviceEntity.__init__(
+            self,
+            coordinator,
+            location,
+            device,
+            f"{device.mac_id}_dr_event_scheduled_today",
+        )
+        self._attr_name = f"{device.name} DR Event Scheduled Today"
+        self._attr_unique_id = f"{device.mac_id}_dr_event_scheduled_today"
+
+    def _location_tz(self) -> ZoneInfo:
+        tz_name = self.location.iana_time_zone
+        if tz_name:
+            try:
+                return ZoneInfo(tz_name)
+            except ZoneInfoNotFoundError:
+                pass
+        return dt_util.DEFAULT_TIME_ZONE
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if a scheduled DR event's start falls on today (local)."""
+        event = self._dr_event()
+        if not event:
+            return False
+        start = self._parse(event.get("startTime"))
+        if not start:
+            return False
+        tz = self._location_tz()
+        return start.astimezone(tz).date() == dt_util.utcnow().astimezone(tz).date()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        event = self._dr_event()
+        if not event:
+            return {}
+        start = self._parse(event.get("startTime"))
+        end = self._parse(event.get("endTime"))
+        tz = self._location_tz()
+        now = dt_util.utcnow()
+        return {
+            "event_id": event.get("eventID"),
+            "start_time": event.get("startTime"),
+            "end_time": event.get("endTime"),
+            "start_time_local": start.astimezone(tz).isoformat() if start else None,
+            "end_time_local": end.astimezone(tz).isoformat() if end else None,
+            "cool_setpoint_limit_min": event.get("coolSetpointLimitMin"),
+            "opt_outable": event.get("optOutable"),
+            "is_active_now": bool(start and end and start <= now <= end),
         }
 
 
