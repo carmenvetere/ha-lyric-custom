@@ -1,7 +1,7 @@
 {
   "domain": "lyric_custom",
   "name": "Honeywell Lyric Custom",
-  "version": "2.1",
+  "version": "2.2",
   "codeowners": ["@timmo001"],
   "config_flow": true,
   "dependencies": ["application_credentials"],
