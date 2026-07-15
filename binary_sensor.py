@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiolyric import Lyric
 from aiolyric.objects.device import LyricDevice
@@ -170,23 +169,13 @@ class LyricDemandResponseSensor(LyricDeviceEntity, BinarySensorEntity):
         event = self.device.attributes.get("drEvent")
         return event if isinstance(event, dict) else None
 
-    def _location_tz(self) -> ZoneInfo:
-        # DR event start/end times are naive ISO strings expressed in the
-        # location's local timezone. Fall back to HA's configured tz if the
-        # location tz is missing or unknown to zoneinfo.
-        tz_name = self.location.iana_time_zone
-        if tz_name:
-            try:
-                return ZoneInfo(tz_name)
-            except ZoneInfoNotFoundError:
-                pass
-        return dt_util.DEFAULT_TIME_ZONE
-
     def _parse(self, iso: str | None) -> datetime | None:
+        # DR event times come back as naive ISO strings in UTC (e.g.
+        # '2026-07-14T19:00:00' means 19:00 UTC = 15:00 EDT), so attach UTC.
         if not iso:
             return None
         try:
-            return datetime.fromisoformat(iso).replace(tzinfo=self._location_tz())
+            return datetime.fromisoformat(iso).replace(tzinfo=dt_util.UTC)
         except ValueError:
             return None
 
