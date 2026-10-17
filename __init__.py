@@ -10,7 +10,7 @@ from aiolyric import Lyric
 from aiolyric.exceptions import LyricAuthenticationException, LyricException
 from aiolyric.objects.device import LyricDevice
 from aiolyric.objects.location import LyricLocation
-from aiolyric.objects.priority import LyricAccessory, LyricRoom
+from aiolyric.objects.priority import LyricAccessory, LyricPriority, LyricRoom
 from aiolyric.const import BASE_URL
 
 from homeassistant.config_entries import ConfigEntry
@@ -42,6 +42,49 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.CLIMATE, Platform.SENSOR, Platform.SWITCH, Platform.BINARY_SENSOR]
+
+# Resideo serves the /priority endpoint in two schemas depending on the account
+# (see https://github.com/timmo001/aiolyric/pull/180). Each pair is
+# (current key, classic key). aiolyric 2.0.x reads only the classic keys and
+# 2.1.2 reads only the current ones, so we fill in both before parsing.
+_PRIORITY_TOP_KEYS = (("priority", "currentPriority"), ("priorityStatus", "status"))
+_PRIORITY_ROOM_KEYS = (
+    ("name", "roomName"),
+    ("avgTemperature", "roomAvgTemp"),
+    ("avgHumidity", "roomAvgHumidity"),
+)
+_PRIORITY_ACCESSORY_KEYS = (
+    ("sensorType", "type"),
+    ("excludeTemperature", "excludeTemp"),
+)
+
+
+def _with_both_keys(data: dict, pairs: tuple[tuple[str, str], ...]) -> dict:
+    """Return a copy of data where each key pair is present under both names."""
+    data = dict(data)
+    for current, classic in pairs:
+        if current in data and classic not in data:
+            data[classic] = data[current]
+        elif classic in data and current not in data:
+            data[current] = data[classic]
+    return data
+
+
+def _normalize_priority_payload(payload: dict) -> dict:
+    """Make a /priority response readable by any aiolyric version."""
+    payload = _with_both_keys(payload, _PRIORITY_TOP_KEYS)
+    current = dict(payload.get("priority") or {})
+    rooms = []
+    for room in current.get("rooms", []):
+        room = _with_both_keys(room, _PRIORITY_ROOM_KEYS)
+        room["accessories"] = [
+            _with_both_keys(acc, _PRIORITY_ACCESSORY_KEYS)
+            for acc in room.get("accessories", [])
+        ]
+        rooms.append(room)
+    current["rooms"] = rooms
+    payload["priority"] = payload["currentPriority"] = current
+    return payload
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -112,34 +155,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ]
 
             if lcc_devices:
-                # Fetch room data for each device, handling failures gracefully
+                # Fetch the priority payload ourselves instead of using
+                # lyric.get_thermostat_rooms(): Resideo serves two schemas for
+                # this endpoint and aiolyric 2.1.2 only parses one of them.
                 async def fetch_rooms(location: LyricLocation, device: LyricDevice) -> None:
-                    """Fetch room data for a device, handling API errors."""
+                    """Fetch room and priority data for a device."""
                     try:
-                        await lyric.get_thermostat_rooms(location.location_id, device.device_id)
-                    except Exception as err:
-                        _LOGGER.warning(
-                            "Failed to fetch room data for device %s: %s",
-                            device.device_id,
-                            err,
-                        )
-
-                await asyncio.gather(
-                    *(fetch_rooms(location, device) for location, device in lcc_devices)
-                )
-
-                # Fetch and store priority data for all devices
-                async def fetch_priority(location: LyricLocation, device: LyricDevice) -> None:
-                    """Fetch priority data via API and store in room attributes."""
-                    try:
-                        if device.mac_id not in lyric.rooms_dict:
-                            return
-
-                        rooms = lyric.rooms_dict[device.mac_id]
-                        if not rooms:
-                            return
-
-                        # Make API call to get priority data
                         url = (
                             f"{BASE_URL}/devices/thermostats/{device.device_id}/priority"
                             f"?apikey={lyric.client_id}&locationId={location.location_id}"
@@ -158,28 +179,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                     response.status,
                                 )
                                 return
+                            payload = await response.json()
 
-                            priority_response = await response.json()
-                            current_priority = priority_response.get("currentPriority", {})
-                            selected_rooms = current_priority.get("selectedRooms", [])
-                            priority_type = current_priority.get("priorityType")
-
-                            # Store priority data in all rooms for this device
-                            for room in rooms.values():
-                                room.attributes["priority_data"] = {
-                                    "type": priority_type,
-                                    "selected_rooms": selected_rooms,
-                                }
+                        priority = LyricPriority(_normalize_priority_payload(payload))
+                        current = priority.current_priority
+                        priority_data = {
+                            "type": current.priority_type,
+                            "selected_rooms": current.selected_rooms,
+                        }
+                        rooms = {}
+                        for room in current.rooms:
+                            room.attributes["priority_data"] = priority_data
+                            rooms[room.id] = room
+                        lyric.rooms_dict[device.mac_id] = rooms
 
                     except Exception as err:
                         _LOGGER.warning(
-                            "Error fetching priority data for device %s: %s",
+                            "Failed to fetch room data for device %s: %s",
                             device.device_id,
                             err,
                         )
 
                 await asyncio.gather(
-                    *(fetch_priority(location, device) for location, device in lcc_devices)
+                    *(fetch_rooms(location, device) for location, device in lcc_devices)
                 )
 
         except LyricAuthenticationException as exception:
