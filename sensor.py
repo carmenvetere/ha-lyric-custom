@@ -19,14 +19,16 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import LyricAccessoryEntity, LyricDeviceEntity
 from .const import DOMAIN
+from .schedule_sync import STATUSES, ScheduleSyncManager, is_schedulable, signal_update
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -164,6 +166,14 @@ async def async_setup_entry(
         if accessory_sensor.suitable_fn(room, accessory)
     )
 
+    manager: ScheduleSyncManager = coordinator.schedule_sync
+    async_add_entities(
+        LyricScheduleSyncSensor(coordinator, location, device, manager)
+        for location in coordinator.data.locations
+        for device in location.devices
+        if is_schedulable(device)
+    )
+
 
 class LyricSensor(LyricDeviceEntity, SensorEntity):
     """Define a Honeywell Lyric sensor."""
@@ -255,3 +265,63 @@ class LyricAccessorySensor(LyricAccessoryEntity, SensorEntity):
         data = super().extra_state_attributes or {}
         data["room_name"] = self._room.room_name
         return data
+
+class LyricScheduleSyncSensor(LyricDeviceEntity, SensorEntity):
+    """Shows whether the thermostat's schedule matches its schedule helper.
+
+    Attributes include the schedule as converted from the helper and the
+    schedule last read from the thermostat, so the two can be compared.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = STATUSES
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:calendar-check"
+    _unrecorded_attributes = frozenset(
+        {"schedule", "thermostat_schedule", "thermostat_schedule_raw", "warnings"}
+    )
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[Lyric],
+        location: LyricLocation,
+        device: LyricDevice,
+        manager: ScheduleSyncManager,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, location, device, f"{device.mac_id}_schedule_sync")
+        self._attr_name = "Schedule sync"
+        self._manager = manager
+
+    @property
+    def native_value(self) -> str:
+        """Return the sync status."""
+        return self._manager.state(self._mac_id).status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return details about the last sync and both schedules."""
+        state = self._manager.state(self._mac_id)
+        return {
+            "source": state.source,
+            "error": state.error,
+            "warnings": state.warnings,
+            "last_synced": state.synced_at,
+            "last_checked": state.last_checked,
+            "schedule": state.schedule,
+            "thermostat_schedule": state.thermostat_schedule,
+            "thermostat_schedule_read_at": state.thermostat_read_at,
+            "thermostat_schedule_error": state.thermostat_read_error,
+            "thermostat_schedule_raw": state.thermostat_schedule_raw,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Update when the sync state changes."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                signal_update(self._manager.entry_id, self._mac_id),
+                self.async_write_ha_state,
+            )
+        )

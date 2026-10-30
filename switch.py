@@ -12,6 +12,7 @@ from aiolyric.objects.priority import LyricRoom
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -20,6 +21,8 @@ from .const import (
     DOMAIN,
     LYRIC_EXCEPTIONS,
     LYRIC_HVAC_MODE_EMERGENCY_HEAT,
+    PRESET_NO_HOLD,
+    PRESET_PERMANENT_HOLD,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,7 +54,8 @@ async def async_setup_entry(
                         device,
                     )
                 )
-                
+                entities.append(LyricFollowScheduleSwitch(coordinator, location, device))
+
                 # Add room priority switches
                 rooms = coordinator.data.rooms_dict.get(device.mac_id, {})
                 for room_id, room in rooms.items():
@@ -257,3 +261,48 @@ class LyricRoomPrioritySwitch(LyricDeviceEntity, SwitchEntity):
             await self.coordinator.async_request_refresh()
         except LYRIC_EXCEPTIONS as exception:
             _LOGGER.error("Failed to clear room priority: %s", exception)
+
+class LyricFollowScheduleSwitch(LyricDeviceEntity, SwitchEntity):
+    """On while the thermostat follows its own schedule (no hold).
+
+    Turning it off pauses the schedule with a permanent hold at the current
+    temperatures. Turning it on cancels any hold and resumes the schedule.
+    """
+
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coordinator, location, device) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator, location, device, f"{device.mac_id}_follow_schedule")
+        self._attr_name = "Follow schedule"
+
+    @property
+    def is_on(self) -> bool:
+        """Return True when no hold is overriding the schedule."""
+        return self.device.changeable_values.thermostat_setpoint_status == PRESET_NO_HOLD
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the active hold, if any."""
+        values = self.device.changeable_values
+        return {
+            "hold": values.thermostat_setpoint_status,
+            "hold_until": values.next_period_time,
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Cancel any hold and resume the schedule."""
+        await self._async_set_status(PRESET_NO_HOLD)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Pause the schedule with a permanent hold at the current temperatures."""
+        await self._async_set_status(PRESET_PERMANENT_HOLD)
+
+    async def _async_set_status(self, status: str) -> None:
+        try:
+            await self._update_thermostat(
+                self.location, self.device, thermostat_setpoint_status=status
+            )
+        except LYRIC_EXCEPTIONS as err:
+            raise HomeAssistantError(f"Couldn't change the schedule hold: {err}") from err
+        await self.coordinator.async_refresh()

@@ -26,3 +26,100 @@ set_room_priority:
       selector:
         object:
 
+
+set_hold:
+  name: Set hold
+  description: >-
+    Override the thermostat's schedule in one step: change the mode and/or
+    temperatures and hold them. Permanent holds last until the schedule is
+    resumed; temporary holds end at the next schedule period; until holds end
+    at the given time.
+  target:
+    entity:
+      integration: lyric_custom
+      domain: climate
+  fields:
+    hold:
+      name: Hold
+      description: How long the override lasts.
+      default: permanent
+      selector:
+        select:
+          options:
+            - permanent
+            - temporary
+            - until
+    until:
+      name: Until
+      description: End time for an 'until' hold (15-minute steps).
+      example: "18:30"
+      selector:
+        time:
+    hvac_mode:
+      name: HVAC mode
+      description: Optional mode to switch to, e.g. off while a door is open.
+      selector:
+        select:
+          options:
+            - "off"
+            - heat
+            - cool
+            - heat_cool
+    temperature:
+      name: Temperature
+      description: Target temperature in heat or cool mode.
+      selector:
+        number:
+          min: 40
+          max: 99
+          step: 0.5
+          mode: box
+    target_temp_low:
+      name: Heat to
+      description: Heat setpoint.
+      selector:
+        number:
+          min: 40
+          max: 99
+          step: 0.5
+          mode: box
+    target_temp_high:
+      name: Cool to
+      description: Cool setpoint.
+      selector:
+        number:
+          min: 40
+          max: 99
+          step: 0.5
+          mode: box
+
+resume_schedule:
+  name: Resume schedule
+  description: >-
+    Cancel any hold so the thermostat follows its schedule again. Optionally
+    switch the mode back at the same time.
+  target:
+    entity:
+      integration: lyric_custom
+      domain: climate
+  fields:
+    hvac_mode:
+      name: HVAC mode
+      description: Optional mode to switch back to, e.g. cool.
+      selector:
+        select:
+          options:
+            - "off"
+            - heat
+            - cool
+            - heat_cool
+
+sync_schedule:
+  name: Sync schedule now
+  description: >-
+    Send the thermostat's linked schedule helper to the thermostat now, even
+    if it hasn't changed. Fails with the reason if the thermostat rejects it.
+  target:
+    entity:
+      integration: lyric_custom
+      domain: climate
