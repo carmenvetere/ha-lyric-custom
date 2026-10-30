@@ -48,26 +48,23 @@ class LyricSensorAccessoryEntityDescription(SensorEntityDescription):
     suitable_fn: Callable[[LyricRoom, LyricAccessory], bool]
 
 
-def get_ventilation_mode(device: LyricDevice) -> str:
-    """Get ventilation mode safely."""
-    try:
-        if hasattr(device, "settings") and isinstance(device.settings, dict):
-            vent_settings = device.settings.get("ventilation", {})
-            if isinstance(vent_settings, dict):
-                return vent_settings.get("mode", "Off")
-    except AttributeError:
-        pass
-    return "Off"
+def get_ventilation_settings(device: LyricDevice) -> dict[str, Any] | None:
+    """Return settings.ventilationModeSettings, present when a ventilator is wired in."""
+    settings = device.settings.attributes.get("ventilationModeSettings")
+    return settings if isinstance(settings, dict) else None
+
+
+def get_ventilation_mode(device: LyricDevice) -> str | None:
+    """Return the ventilation mode, e.g. 'Off' (the API reports it as a string)."""
+    mode = (get_ventilation_settings(device) or {}).get("changeableValues")
+    if isinstance(mode, dict):  # in case it's nested like the fan settings
+        mode = mode.get("mode")
+    return mode
 
 
 def has_ventilation(device: LyricDevice) -> bool:
-    """Check if device has ventilation settings safely."""
-    try:
-        if hasattr(device, "settings") and isinstance(device.settings, dict):
-            return "ventilation" in device.settings
-    except AttributeError:
-        pass
-    return False
+    """Return True if the thermostat reports ventilation settings."""
+    return get_ventilation_settings(device) is not None
 
 
 DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
@@ -108,6 +105,8 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="ventilation_mode",
         translation_key="ventilation_mode",
+        name="Ventilation mode",
+        icon="mdi:air-filter",
         value_fn=get_ventilation_mode,
         suitable_fn=has_ventilation,
     ),
@@ -210,16 +209,14 @@ class LyricSensor(LyricDeviceEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
         if self.entity_description.key == "ventilation_mode":
-            try:
-                ventilation_settings = self.device.settings.get("ventilation", {})
-                if isinstance(ventilation_settings, dict):
-                    return {
-                        "min_time_per_day": ventilation_settings.get("min_time_per_day"),
-                        "ventilation_per_hour": ventilation_settings.get("ventilation_per_hour"),
-                        "ventilation_control": ventilation_settings.get("ventilation_control"),
-                    }
-            except AttributeError:
-                pass
+            settings = get_ventilation_settings(self.device) or {}
+            return {
+                "ventilating": settings.get("ventilationFanRequested"),
+                "speed": settings.get("ventilationSpeed"),
+                "timer": settings.get("ventilationTimer"),
+                "boost_timer": settings.get("ventilationBoostTimer"),
+                "core_timer": settings.get("ventilationCoreTimer"),
+            }
         return {}
 
 
