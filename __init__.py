@@ -36,12 +36,19 @@ from .api import (
     OAuth2SessionLyric,
 )
 from .const import DOMAIN
+from .schedule_sync import ScheduleSyncManager
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.CLIMATE, Platform.SENSOR, Platform.SWITCH, Platform.BINARY_SENSOR]
+PLATFORMS = [
+    Platform.CLIMATE,
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.BINARY_SENSOR,
+    Platform.SELECT,
+]
 
 # Resideo serves the /priority endpoint in two schemas depending on the account
 # (see https://github.com/timmo001/aiolyric/pull/180). Each pair is
@@ -225,6 +232,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.set_room_priority = set_room_priority
 
     await coordinator.async_config_entry_first_refresh()
+
+    # Keeps thermostat schedules in sync with Home Assistant schedule helpers.
+    schedule_sync = ScheduleSyncManager(
+        hass, entry.entry_id, coordinator, client, session
+    )
+    await schedule_sync.async_setup()
+    entry.async_on_unload(schedule_sync.async_unload)
+    coordinator.schedule_sync = schedule_sync
+
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

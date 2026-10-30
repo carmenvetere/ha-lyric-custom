@@ -19,14 +19,16 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import LyricAccessoryEntity, LyricDeviceEntity
 from .const import DOMAIN
+from .schedule_sync import STATUSES, ScheduleSyncManager, is_schedulable, signal_update
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,32 +48,30 @@ class LyricSensorAccessoryEntityDescription(SensorEntityDescription):
     suitable_fn: Callable[[LyricRoom, LyricAccessory], bool]
 
 
-def get_ventilation_mode(device: LyricDevice) -> str:
-    """Get ventilation mode safely."""
-    try:
-        if hasattr(device, "settings") and isinstance(device.settings, dict):
-            vent_settings = device.settings.get("ventilation", {})
-            if isinstance(vent_settings, dict):
-                return vent_settings.get("mode", "Off")
-    except AttributeError:
-        pass
-    return "Off"
+def get_ventilation_settings(device: LyricDevice) -> dict[str, Any] | None:
+    """Return settings.ventilationModeSettings, present when a ventilator is wired in."""
+    settings = device.settings.attributes.get("ventilationModeSettings")
+    return settings if isinstance(settings, dict) else None
+
+
+def get_ventilation_mode(device: LyricDevice) -> str | None:
+    """Return the ventilation mode, e.g. 'Off' (the API reports it as a string)."""
+    mode = (get_ventilation_settings(device) or {}).get("changeableValues")
+    if isinstance(mode, dict):  # in case it's nested like the fan settings
+        mode = mode.get("mode")
+    return mode
 
 
 def has_ventilation(device: LyricDevice) -> bool:
-    """Check if device has ventilation settings safely."""
-    try:
-        if hasattr(device, "settings") and isinstance(device.settings, dict):
-            return "ventilation" in device.settings
-    except AttributeError:
-        pass
-    return False
+    """Return True if the thermostat reports ventilation settings."""
+    return get_ventilation_settings(device) is not None
 
 
 DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="indoor_temperature",
         translation_key="indoor_temperature",
+        name="Indoor temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda device: device.indoor_temperature,
@@ -80,6 +80,7 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="indoor_humidity",
         translation_key="indoor_humidity",
+        name="Indoor humidity",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -89,6 +90,7 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="outdoor_temperature",
         translation_key="outdoor_temperature",
+        name="Outdoor temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda device: device.outdoor_temperature,
@@ -97,6 +99,7 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="outdoor_humidity",
         translation_key="outdoor_humidity",
+        name="Outdoor humidity",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -106,6 +109,8 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="ventilation_mode",
         translation_key="ventilation_mode",
+        name="Ventilation mode",
+        icon="mdi:air-filter",
         value_fn=get_ventilation_mode,
         suitable_fn=has_ventilation,
     ),
@@ -115,6 +120,7 @@ ACCESSORY_SENSORS: tuple[LyricSensorAccessoryEntityDescription, ...] = (
     LyricSensorAccessoryEntityDescription(
         key="room_temperature",
         translation_key="room_temperature",
+        name="Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda _, accessory: accessory.temperature,
@@ -124,6 +130,7 @@ ACCESSORY_SENSORS: tuple[LyricSensorAccessoryEntityDescription, ...] = (
     LyricSensorAccessoryEntityDescription(
         key="room_humidity",
         translation_key="room_humidity",
+        name="Humidity",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -164,6 +171,14 @@ async def async_setup_entry(
         if accessory_sensor.suitable_fn(room, accessory)
     )
 
+    manager: ScheduleSyncManager = coordinator.schedule_sync
+    async_add_entities(
+        LyricScheduleSyncSensor(coordinator, location, device, manager)
+        for location in coordinator.data.locations
+        for device in location.devices
+        if is_schedulable(device)
+    )
+
 
 class LyricSensor(LyricDeviceEntity, SensorEntity):
     """Define a Honeywell Lyric sensor."""
@@ -200,16 +215,14 @@ class LyricSensor(LyricDeviceEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
         if self.entity_description.key == "ventilation_mode":
-            try:
-                ventilation_settings = self.device.settings.get("ventilation", {})
-                if isinstance(ventilation_settings, dict):
-                    return {
-                        "min_time_per_day": ventilation_settings.get("min_time_per_day"),
-                        "ventilation_per_hour": ventilation_settings.get("ventilation_per_hour"),
-                        "ventilation_control": ventilation_settings.get("ventilation_control"),
-                    }
-            except AttributeError:
-                pass
+            settings = get_ventilation_settings(self.device) or {}
+            return {
+                "ventilating": settings.get("ventilationFanRequested"),
+                "speed": settings.get("ventilationSpeed"),
+                "timer": settings.get("ventilationTimer"),
+                "boost_timer": settings.get("ventilationBoostTimer"),
+                "core_timer": settings.get("ventilationCoreTimer"),
+            }
         return {}
 
 
@@ -255,3 +268,63 @@ class LyricAccessorySensor(LyricAccessoryEntity, SensorEntity):
         data = super().extra_state_attributes or {}
         data["room_name"] = self._room.room_name
         return data
+
+class LyricScheduleSyncSensor(LyricDeviceEntity, SensorEntity):
+    """Shows whether the thermostat's schedule matches its schedule helper.
+
+    Attributes include the schedule as converted from the helper and the
+    schedule last read from the thermostat, so the two can be compared.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = STATUSES
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:calendar-check"
+    _unrecorded_attributes = frozenset(
+        {"schedule", "thermostat_schedule", "thermostat_schedule_raw", "warnings"}
+    )
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[Lyric],
+        location: LyricLocation,
+        device: LyricDevice,
+        manager: ScheduleSyncManager,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, location, device, f"{device.mac_id}_schedule_sync")
+        self._attr_name = "Schedule sync"
+        self._manager = manager
+
+    @property
+    def native_value(self) -> str:
+        """Return the sync status."""
+        return self._manager.state(self._mac_id).status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return details about the last sync and both schedules."""
+        state = self._manager.state(self._mac_id)
+        return {
+            "source": state.source,
+            "error": state.error,
+            "warnings": state.warnings,
+            "last_synced": state.synced_at,
+            "last_checked": state.last_checked,
+            "schedule": state.schedule,
+            "thermostat_schedule": state.thermostat_schedule,
+            "thermostat_schedule_read_at": state.thermostat_read_at,
+            "thermostat_schedule_error": state.thermostat_read_error,
+            "thermostat_schedule_raw": state.thermostat_schedule_raw,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Update when the sync state changes."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                signal_update(self._manager.entry_id, self._mac_id),
+                self.async_write_ha_state,
+            )
+        )

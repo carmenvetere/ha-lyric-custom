@@ -1,10 +1,11 @@
 {
   "domain": "lyric_custom",
   "name": "Honeywell Lyric Custom",
-  "version": "2.2",
+  "version": "2.3",
   "codeowners": ["@timmo001"],
   "config_flow": true,
   "dependencies": ["application_credentials"],
+  "after_dependencies": ["schedule"],
   "dhcp": [
     {
       "hostname": "lyric-*",

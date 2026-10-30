@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import time as dt_time
 import enum
 import logging
 from time import localtime, strftime, time
@@ -14,6 +15,7 @@ from aiolyric.objects.location import LyricLocation
 import voluptuous as vol
 
 from homeassistant.components.climate import (
+    ATTR_HVAC_MODE,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
     FAN_AUTO,
@@ -120,6 +122,20 @@ ATTR_TIME_PERIOD = "time_period"
 SERVICE_SET_ROOM_PRIORITY = "set_room_priority"
 ATTR_ROOM_NAMES = "room_names"
 
+SERVICE_SET_HOLD = "set_hold"
+SERVICE_RESUME_SCHEDULE = "resume_schedule"
+SERVICE_SYNC_SCHEDULE = "sync_schedule"
+ATTR_HOLD = "hold"
+ATTR_UNTIL = "until"
+HOLD_PERMANENT = "permanent"
+HOLD_TEMPORARY = "temporary"
+HOLD_UNTIL = "until"
+HOLD_STATUSES = {
+    HOLD_PERMANENT: PRESET_PERMANENT_HOLD,
+    HOLD_TEMPORARY: PRESET_TEMPORARY_HOLD,
+    HOLD_UNTIL: PRESET_HOLD_UNTIL,
+}
+
 SCHEMA_HOLD_TIME: VolDictType = {
     vol.Required(ATTR_TIME_PERIOD, default="01:00:00"): vol.All(
         cv.time_period,
@@ -178,6 +194,31 @@ async def async_setup_entry(
             vol.Required(ATTR_ROOM_NAMES): vol.All(cv.ensure_list, [cv.string]),
         },
         "async_set_room_priority",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_HOLD,
+        {
+            vol.Optional(ATTR_HOLD, default=HOLD_PERMANENT): vol.In(HOLD_STATUSES),
+            vol.Optional(ATTR_UNTIL): cv.time,
+            vol.Optional(ATTR_HVAC_MODE): vol.All(vol.Coerce(HVACMode), vol.In(LYRIC_HVAC_MODES)),
+            vol.Optional(ATTR_TEMPERATURE): vol.Coerce(float),
+            vol.Optional(ATTR_TARGET_TEMP_LOW): vol.Coerce(float),
+            vol.Optional(ATTR_TARGET_TEMP_HIGH): vol.Coerce(float),
+        },
+        "async_set_hold",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_RESUME_SCHEDULE,
+        {
+            vol.Optional(ATTR_HVAC_MODE): vol.All(vol.Coerce(HVACMode), vol.In(LYRIC_HVAC_MODES)),
+        },
+        "async_resume_schedule",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SYNC_SCHEDULE, {}, "async_sync_schedule"
     )
 
 
@@ -504,6 +545,103 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
                 fan_mode,
             )
         await self.coordinator.async_refresh()
+
+    def _require_lcc(self) -> None:
+        if self._attr_thermostat_type is not LyricThermostatType.LCC:
+            raise HomeAssistantError(
+                f"{self.device.name} doesn't support holds or schedules (T-series only)"
+            )
+
+    async def async_set_hold(
+        self,
+        hold: str = HOLD_PERMANENT,
+        until: dt_time | None = None,
+        hvac_mode: HVACMode | None = None,
+        temperature: float | None = None,
+        target_temp_low: float | None = None,
+        target_temp_high: float | None = None,
+    ) -> None:
+        """Override the schedule in one call: mode and/or temperatures plus a hold.
+
+        hold: permanent (until resumed), temporary (until the next schedule
+        period) or until (a time today, set with 'until').
+        """
+        self._require_lcc()
+        device = self.device
+        mode = hvac_mode or self.hvac_mode
+        heat = cool = None
+
+        if temperature is not None:
+            if mode == HVACMode.COOL:
+                cool = temperature
+            elif mode == HVACMode.HEAT:
+                heat = temperature
+            else:
+                raise HomeAssistantError(
+                    "Use target_temp_low and target_temp_high in heat/cool mode; "
+                    "'temperature' only applies in heat or cool mode"
+                )
+        if target_temp_low is not None:
+            heat = target_temp_low
+        if target_temp_high is not None:
+            cool = target_temp_high
+
+        next_period_time = None
+        if hold == HOLD_UNTIL:
+            if until is None:
+                raise HomeAssistantError("Set 'until' when using an until hold")
+            increment = int(device.allowed_time_increments or 15)
+            if until.minute % increment:
+                raise HomeAssistantError(
+                    f"'until' must be on {increment}-minute steps (e.g. :00, :15, :30, :45)"
+                )
+            next_period_time = until.strftime("%H:%M:00")
+
+        try:
+            await self._update_thermostat(
+                self.location,
+                device,
+                mode=LYRIC_HVAC_MODES[hvac_mode] if hvac_mode else None,
+                heat_setpoint=heat,
+                cool_setpoint=cool,
+                thermostat_setpoint_status=HOLD_STATUSES[hold],
+                next_period_time=next_period_time,
+            )
+        except LYRIC_EXCEPTIONS as err:
+            raise HomeAssistantError(f"Couldn't set the hold: {err}") from err
+        await self.coordinator.async_refresh()
+
+    async def async_resume_schedule(self, hvac_mode: HVACMode | None = None) -> None:
+        """Cancel any hold so the thermostat follows its schedule again.
+
+        Optionally switch the mode back at the same time, e.g. to cool after
+        an override that turned the system off.
+        """
+        self._require_lcc()
+        try:
+            await self._update_thermostat(
+                self.location,
+                self.device,
+                mode=LYRIC_HVAC_MODES[hvac_mode] if hvac_mode else None,
+                thermostat_setpoint_status=PRESET_NO_HOLD,
+            )
+        except LYRIC_EXCEPTIONS as err:
+            raise HomeAssistantError(f"Couldn't resume the schedule: {err}") from err
+        await self.coordinator.async_refresh()
+
+    async def async_sync_schedule(self) -> None:
+        """Send the linked schedule helper to the thermostat now."""
+        self._require_lcc()
+        manager = self.coordinator.schedule_sync
+        state = manager.state(self.device.mac_id)
+        if not state.source:
+            raise HomeAssistantError(
+                f"No schedule source is set for {self.device.name}; pick one with "
+                "its 'Schedule source' select"
+            )
+        state = await manager.async_check(self.device.mac_id, force=True)
+        if state.error:
+            raise HomeAssistantError(f"Schedule sync failed: {state.error}")
 
     async def async_set_room_priority(self, room_names: list[str]) -> None:
         """Set room priority."""
