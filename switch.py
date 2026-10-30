@@ -94,7 +94,7 @@ class LyricEmergencyHeatSwitch(LyricDeviceEntity, SwitchEntity):
             device,
             f"{device.mac_id}_emergency_heat",
         )
-        self._attr_name = f"{device.name} Emergency Heat"
+        self._attr_name = "Emergency heat"
         self._attr_unique_id = f"{device.mac_id}_emergency_heat"
         _LOGGER.debug(
             "Initialized emergency heat switch for %s (device_id: %s, mac_id: %s)",

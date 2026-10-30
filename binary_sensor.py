@@ -110,7 +110,7 @@ class LyricVentilationRequestSensor(LyricDeviceEntity, BinarySensorEntity):
             device,
             f"{device.mac_id}_ventilation_request",
         )
-        self._attr_name = f"{device.name} Ventilation Request"
+        self._attr_name = "Ventilation request"
         self._attr_unique_id = f"{device.mac_id}_ventilation_request"
 
     @property
@@ -168,7 +168,7 @@ class LyricDemandResponseSensor(LyricDeviceEntity, BinarySensorEntity):
             device,
             f"{device.mac_id}_dr_event_active",
         )
-        self._attr_name = f"{device.name} DR Event Active"
+        self._attr_name = "DR event active"
         self._attr_unique_id = f"{device.mac_id}_dr_event_active"
 
     def _dr_event(self) -> dict[str, Any] | None:
@@ -248,7 +248,7 @@ class LyricDemandResponseScheduledTodaySensor(LyricDemandResponseSensor):
             device,
             f"{device.mac_id}_dr_event_scheduled_today",
         )
-        self._attr_name = f"{device.name} DR Event Scheduled Today"
+        self._attr_name = "DR event scheduled today"
         self._attr_unique_id = f"{device.mac_id}_dr_event_scheduled_today"
 
     def _location_tz(self) -> ZoneInfo:
@@ -315,7 +315,7 @@ class LyricMotionSensor(LyricAccessoryEntity, BinarySensorEntity):
             accessory,
             f"{device.mac_id}_room{room.id}_acc{accessory.id}_motion",
         )
-        self._attr_name = f"{room.room_name} Motion"
+        self._attr_name = "Motion"
         self._attr_unique_id = f"{device.mac_id}_room{room.id}_acc{accessory.id}_motion"
 
     @property

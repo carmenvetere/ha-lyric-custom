@@ -71,6 +71,7 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="indoor_temperature",
         translation_key="indoor_temperature",
+        name="Indoor temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda device: device.indoor_temperature,
@@ -79,6 +80,7 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="indoor_humidity",
         translation_key="indoor_humidity",
+        name="Indoor humidity",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -88,6 +90,7 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="outdoor_temperature",
         translation_key="outdoor_temperature",
+        name="Outdoor temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda device: device.outdoor_temperature,
@@ -96,6 +99,7 @@ DEVICE_SENSORS: tuple[LyricSensorEntityDescription, ...] = (
     LyricSensorEntityDescription(
         key="outdoor_humidity",
         translation_key="outdoor_humidity",
+        name="Outdoor humidity",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -116,6 +120,7 @@ ACCESSORY_SENSORS: tuple[LyricSensorAccessoryEntityDescription, ...] = (
     LyricSensorAccessoryEntityDescription(
         key="room_temperature",
         translation_key="room_temperature",
+        name="Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda _, accessory: accessory.temperature,
@@ -125,6 +130,7 @@ ACCESSORY_SENSORS: tuple[LyricSensorAccessoryEntityDescription, ...] = (
     LyricSensorAccessoryEntityDescription(
         key="room_humidity",
         translation_key="room_humidity",
+        name="Humidity",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
