@@ -9,6 +9,7 @@ import logging
 from time import localtime, strftime, time
 from typing import Any
 
+from aiohttp import ClientError
 from aiolyric import Lyric
 from aiolyric.objects.device import LyricDevice
 from aiolyric.objects.location import LyricLocation
@@ -54,6 +55,7 @@ from .const import (
     PRESET_TEMPORARY_HOLD,
     PRESET_VACATION_HOLD,
 )
+from .schedule_sync import SyncError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -612,20 +614,23 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
         await self.coordinator.async_refresh()
 
     async def async_resume_schedule(self, hvac_mode: HVACMode | None = None) -> None:
-        """Cancel any hold so the thermostat follows its schedule again.
+        """Enable the schedule and cancel any hold, so the thermostat follows it.
 
         Optionally switch the mode back at the same time, e.g. to cool after
         an override that turned the system off.
         """
         self._require_lcc()
         try:
+            await self.coordinator.schedule_sync.async_set_schedule_enabled(
+                self.location, self.device, True
+            )
             await self._update_thermostat(
                 self.location,
                 self.device,
                 mode=LYRIC_HVAC_MODES[hvac_mode] if hvac_mode else None,
                 thermostat_setpoint_status=PRESET_NO_HOLD,
             )
-        except LYRIC_EXCEPTIONS as err:
+        except (*LYRIC_EXCEPTIONS, SyncError, ClientError, TimeoutError) as err:
             raise HomeAssistantError(f"Couldn't resume the schedule: {err}") from err
         await self.coordinator.async_refresh()
 

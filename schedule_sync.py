@@ -370,6 +370,29 @@ class ScheduleSyncManager:
             _LOGGER.info("Schedule from %s synced to %s", state.source, device.name)
             return state
 
+    async def async_set_schedule_enabled(
+        self, location: LyricLocation, device: LyricDevice, enabled: bool
+    ) -> None:
+        """Enable (resume) or disable (pause) the thermostat's own schedule.
+
+        This is separate from holds: a thermostat with no hold still ignores
+        its schedule while the schedule is paused.
+        """
+        if self._schedule_query is None:
+            await self._async_get_schedule(location, device)  # learn the query form
+        url = self._url(
+            location,
+            device,
+            self._schedule_query or "",
+            path=f"/status/{'resume' if enabled else 'pause'}",
+        )
+        try:
+            await self._async_request("PUT", url, {})
+        except SyncError as err:
+            if "HTTP 400" not in str(err):
+                raise
+            await self._async_request("PUT", url, None)  # some endpoints want no body
+
     # --- internals ---------------------------------------------------------
 
     def _set_error(self, state: SyncState, message: str) -> None:
@@ -437,9 +460,15 @@ class ScheduleSyncManager:
         state.thermostat_read_error = None
         return parsed
 
-    def _url(self, location: LyricLocation, device: LyricDevice, extra: str = "") -> str:
+    def _url(
+        self,
+        location: LyricLocation,
+        device: LyricDevice,
+        extra: str = "",
+        path: str = "",
+    ) -> str:
         return (
-            f"{BASE_URL}/devices/schedule/{device.device_id}"
+            f"{BASE_URL}/devices/schedule/{device.device_id}{path}"
             f"?apikey={self._coordinator.data.client_id}"
             f"&locationId={location.location_id}{extra}"
         )
