@@ -58,6 +58,12 @@ VERIFY_DELAY_SECONDS = 5
 VERIFY_ATTEMPTS = 3
 REQUEST_TIMEOUT = ClientTimeout(total=30)
 
+# Extra query parameters for the schedule endpoint, tried in order until a
+# read succeeds; the one that works is then used for reads and writes. The
+# live API rejected requests without a 'type' (HTTP 400), and its docs list a
+# required 'type' without stating the value.
+SCHEDULE_QUERY_VARIANTS = ("&type=regular", "", "&type=timed")
+
 STORE_VERSION = 1
 
 STATUS_NOT_CONFIGURED = "not_configured"
@@ -124,6 +130,7 @@ class ScheduleSyncManager:
         self.states: dict[str, SyncState] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._unsubs: list[CALLBACK_TYPE] = []
+        self._schedule_query: str | None = None  # working SCHEDULE_QUERY_VARIANTS entry
 
     # --- lifecycle -------------------------------------------------------
 
@@ -303,7 +310,7 @@ class ScheduleSyncManager:
                 return state
 
             if (found := self._device(mac_id)) is None:
-                self._set_error(state, "Thermostat not found")
+                self._set_error(state, f"Thermostat {mac_id} not found")
                 self._notify(mac_id)
                 return state
             location, device = found
@@ -312,7 +319,7 @@ class ScheduleSyncManager:
                 ha_schedule = await self._async_get_ha_schedule(state.source)
                 periods, warnings = blocks_to_periods(ha_schedule, self._limits(device))
             except (ScheduleError, HomeAssistantError) as err:
-                self._set_error(state, f"{state.source}: {err}")
+                self._set_error(state, f"{device.name} ({state.source}): {err}")
                 self._notify(mac_id)
                 return state
 
@@ -348,7 +355,7 @@ class ScheduleSyncManager:
             ) as err:
                 state.failed_fingerprint = wanted
                 state.failed_at = now
-                self._set_error(state, str(err))
+                self._set_error(state, f"{device.name} ({state.source}): {err}")
                 self._notify(mac_id)
                 return state
 
@@ -399,7 +406,9 @@ class ScheduleSyncManager:
 
         payload, warnings = build_device_schedule(current, periods)
         state.warnings = [*state.warnings, *warnings]
-        await self._async_request("POST", self._url(location, device), payload)
+        await self._async_request(
+            "POST", self._url(location, device, self._schedule_query or ""), payload
+        )
 
         # The cloud can take a moment to reflect a write, so check a few times.
         for _attempt in range(VERIFY_ATTEMPTS):
@@ -415,7 +424,7 @@ class ScheduleSyncManager:
     async def _async_read(
         self, location: LyricLocation, device: LyricDevice, state: SyncState
     ) -> DeviceSchedule:
-        data = await self._async_request("GET", self._url(location, device))
+        data = await self._async_get_schedule(location, device)
         state.thermostat_schedule_raw = data
         state.thermostat_read_at = dt_util.utcnow()
         try:
@@ -428,12 +437,34 @@ class ScheduleSyncManager:
         state.thermostat_read_error = None
         return parsed
 
-    def _url(self, location: LyricLocation, device: LyricDevice) -> str:
+    def _url(self, location: LyricLocation, device: LyricDevice, extra: str = "") -> str:
         return (
             f"{BASE_URL}/devices/schedule/{device.device_id}"
             f"?apikey={self._coordinator.data.client_id}"
-            f"&locationId={location.location_id}"
+            f"&locationId={location.location_id}{extra}"
         )
+
+    async def _async_get_schedule(self, location: LyricLocation, device: LyricDevice) -> Any:
+        """GET the schedule, finding which query parameters the API accepts."""
+        if self._schedule_query is not None:
+            return await self._async_request(
+                "GET", self._url(location, device, self._schedule_query)
+            )
+        failures = []
+        for extra in SCHEDULE_QUERY_VARIANTS:
+            try:
+                data = await self._async_request("GET", self._url(location, device, extra))
+            except SyncError as err:
+                if "HTTP 400" not in str(err):
+                    raise
+                failures.append(f"{extra.lstrip('&') or 'no type'}: {err}")
+                continue
+            self._schedule_query = extra
+            _LOGGER.info(
+                "Schedule endpoint accepts '%s'", extra.lstrip("&") or "no type parameter"
+            )
+            return data
+        raise SyncError("GET schedule was rejected in every known form: " + "; ".join(failures))
 
     async def _async_request(
         self, method: str, url: str, payload: dict[str, Any] | None = None
