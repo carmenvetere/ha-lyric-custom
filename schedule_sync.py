@@ -46,6 +46,7 @@ from .schedule_convert import (
     fingerprint,
     parse_device_schedule,
     same_schedule,
+    slugify,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -234,8 +235,9 @@ class ScheduleSyncManager:
             ((loc, dev) for loc, dev in self._devices() if dev.mac_id == mac_id), None
         )
 
-    @staticmethod
-    def _limits(device: LyricDevice) -> DeviceLimits:
+    def _limits(self, device: LyricDevice) -> DeviceLimits:
+        fan = device.settings.attributes.get("fan") or {}
+        rooms = self._coordinator.data.rooms_dict.get(device.mac_id, {})
         return DeviceLimits(
             precision=1.0 if device.units == "Fahrenheit" else 0.5,
             time_increment=int(device.allowed_time_increments or 15),
@@ -244,6 +246,8 @@ class ScheduleSyncManager:
             min_cool=device.min_cool_setpoint,
             max_cool=device.max_cool_setpoint,
             deadband=float(device.deadband or 0),
+            fan_modes=tuple(fan.get("allowedModes") or ()),
+            rooms={slugify(room.room_name): int(room.id) for room in rooms.values()},
         )
 
     # --- public API --------------------------------------------------------
@@ -393,7 +397,8 @@ class ScheduleSyncManager:
             _LOGGER.debug("%s already has this schedule; nothing sent", device.name)
             return
 
-        payload = build_device_schedule(current, periods)
+        payload, warnings = build_device_schedule(current, periods)
+        state.warnings = [*state.warnings, *warnings]
         await self._async_request("POST", self._url(location, device), payload)
 
         # The cloud can take a moment to reflect a write, so check a few times.
