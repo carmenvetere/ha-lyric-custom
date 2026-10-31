@@ -402,8 +402,12 @@ class ScheduleSyncManager:
         state.error = message
 
     async def _async_get_ha_schedule(self, entity_id: str) -> dict[str, Any]:
-        if self.hass.states.get(entity_id) is None:
-            raise ScheduleError("this schedule helper doesn't exist")
+        state = self.hass.states.get(entity_id)
+        if state is None or state.attributes.get("restored"):
+            raise ScheduleError(
+                "this schedule helper doesn't exist (it may have been deleted); "
+                "pick another in the thermostat's Schedule source"
+            )
         response = await self.hass.services.async_call(
             "schedule",
             "get_schedule",

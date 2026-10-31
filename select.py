@@ -66,7 +66,13 @@ class LyricScheduleSourceSelect(LyricDeviceEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return 'Not synced' plus every schedule helper in Home Assistant."""
-        helpers = sorted(self.hass.states.async_entity_ids("schedule"))
+        # Skip leftovers of deleted helpers: Home Assistant keeps a "restored",
+        # unavailable state for registered entities that no longer exist.
+        helpers = sorted(
+            state.entity_id
+            for state in self.hass.states.async_all("schedule")
+            if not state.attributes.get("restored")
+        )
         current = self._manager.state(self._mac_id).source
         if current and current not in helpers:
             helpers.append(current)  # keep a deleted helper visible until changed
