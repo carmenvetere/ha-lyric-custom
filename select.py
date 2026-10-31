@@ -8,10 +8,11 @@ from aiolyric.objects.location import LyricLocation
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_STATE_CHANGED, EntityCategory
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import LyricDeviceEntity
@@ -78,7 +79,7 @@ class LyricScheduleSourceSelect(LyricDeviceEntity, SelectEntity):
         )
 
     async def async_added_to_hass(self) -> None:
-        """Update when the sync state changes."""
+        """Update when the sync state changes or schedule helpers come and go."""
         await super().async_added_to_hass()
         self.async_on_remove(
             async_dispatcher_connect(
@@ -87,3 +88,29 @@ class LyricScheduleSourceSelect(LyricDeviceEntity, SelectEntity):
                 self.async_write_ha_state,
             )
         )
+        # The options list is only rebuilt when this entity writes its state, so
+        # refresh it when a schedule helper is added, removed or renamed, and
+        # once startup finishes (helpers may load after this integration).
+        self.async_on_remove(
+            self.hass.bus.async_listen(
+                EVENT_STATE_CHANGED,
+                self._handle_schedule_helpers_changed,
+                event_filter=_is_schedule_helper_added_or_removed,
+            )
+        )
+        self.async_on_remove(async_at_started(self.hass, self._handle_started))
+
+    @callback
+    def _handle_schedule_helpers_changed(self, _event: Event) -> None:
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_started(self, _hass: HomeAssistant) -> None:
+        self.async_write_ha_state()
+
+
+@callback
+def _is_schedule_helper_added_or_removed(event_data: dict) -> bool:
+    return str(event_data.get("entity_id", "")).startswith("schedule.") and (
+        event_data.get("old_state") is None or event_data.get("new_state") is None
+    )
