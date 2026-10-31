@@ -9,6 +9,8 @@ from aiolyric.objects.device import LyricDevice
 from aiolyric.objects.location import LyricLocation
 from aiolyric.objects.priority import LyricRoom
 
+from aiohttp import ClientError
+
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -22,8 +24,8 @@ from .const import (
     LYRIC_EXCEPTIONS,
     LYRIC_HVAC_MODE_EMERGENCY_HEAT,
     PRESET_NO_HOLD,
-    PRESET_PERMANENT_HOLD,
 )
+from .schedule_sync import SyncError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -263,10 +265,11 @@ class LyricRoomPrioritySwitch(LyricDeviceEntity, SwitchEntity):
             _LOGGER.error("Failed to clear room priority: %s", exception)
 
 class LyricFollowScheduleSwitch(LyricDeviceEntity, SwitchEntity):
-    """On while the thermostat follows its own schedule (no hold).
+    """On while the thermostat's own schedule is enabled.
 
-    Turning it off pauses the schedule with a permanent hold at the current
-    temperatures. Turning it on cancels any hold and resumes the schedule.
+    Turning it on enables (resumes) the schedule and cancels any hold, so the
+    thermostat follows its schedule again. Turning it off disables (pauses)
+    the schedule; the thermostat keeps its current temperatures.
     """
 
     _attr_icon = "mdi:calendar-clock"
@@ -278,31 +281,47 @@ class LyricFollowScheduleSwitch(LyricDeviceEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return True when no hold is overriding the schedule."""
+        """Return True when the thermostat's schedule is enabled."""
+        if (status := self.device.schedule_status) is not None:
+            return str(status).lower() == "resume"
         return self.device.changeable_values.thermostat_setpoint_status == PRESET_NO_HOLD
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the active hold, if any."""
+        """Return the schedule status and the active hold, if any."""
         values = self.device.changeable_values
         return {
+            "schedule_status": self.device.schedule_status,
             "hold": values.thermostat_setpoint_status,
             "hold_until": values.next_period_time,
         }
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Cancel any hold and resume the schedule."""
-        await self._async_set_status(PRESET_NO_HOLD)
+        """Enable the schedule and cancel any hold."""
+        manager = self.coordinator.schedule_sync
+        try:
+            await manager.async_set_schedule_enabled(self.location, self.device, True)
+            await self._update_thermostat(
+                self.location, self.device, thermostat_setpoint_status=PRESET_NO_HOLD
+            )
+        except (*LYRIC_EXCEPTIONS, SyncError, ClientError, TimeoutError) as err:
+            raise HomeAssistantError(f"Couldn't resume the schedule: {err}") from err
+        await self._async_confirm("resume")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Pause the schedule with a permanent hold at the current temperatures."""
-        await self._async_set_status(PRESET_PERMANENT_HOLD)
-
-    async def _async_set_status(self, status: str) -> None:
+        """Disable the schedule, keeping the current temperatures."""
+        manager = self.coordinator.schedule_sync
         try:
-            await self._update_thermostat(
-                self.location, self.device, thermostat_setpoint_status=status
-            )
-        except LYRIC_EXCEPTIONS as err:
-            raise HomeAssistantError(f"Couldn't change the schedule hold: {err}") from err
+            await manager.async_set_schedule_enabled(self.location, self.device, False)
+        except (*LYRIC_EXCEPTIONS, SyncError, ClientError, TimeoutError) as err:
+            raise HomeAssistantError(f"Couldn't pause the schedule: {err}") from err
+        await self._async_confirm("pause")
+
+    async def _async_confirm(self, expected: str) -> None:
         await self.coordinator.async_refresh()
+        status = self.device.schedule_status
+        if status is not None and str(status).lower() != expected:
+            raise HomeAssistantError(
+                f"{self.device.name} accepted the request, but its schedule status is "
+                f"still '{status}'"
+            )
