@@ -243,6 +243,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    # Register the thermostats first, so room sensor devices can link to them
+    # by device registry id (via_device_id).
+    device_registry = dr.async_get(hass)
+    coordinator.thermostat_device_ids = {}
+    for location in coordinator.data.locations:
+        for device in location.devices:
+            coordinator.thermostat_device_ids[device.mac_id] = device_registry.async_get_or_create(
+                config_entry_id=entry.entry_id,
+                identifiers={(dr.CONNECTION_NETWORK_MAC, device.mac_id)},
+                connections={(dr.CONNECTION_NETWORK_MAC, device.mac_id)},
+                manufacturer="Honeywell",
+                model=device.device_model,
+                name=f"{device.name} Thermostat",
+            ).id
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
@@ -339,7 +354,7 @@ class LyricAccessoryEntity(LyricDeviceEntity):
             manufacturer="Honeywell",
             model="RCHTSENSOR",
             name=f"{self.room.room_name} Sensor",
-            via_device=(dr.CONNECTION_NETWORK_MAC, self._mac_id),
+            via_device_id=self.coordinator.thermostat_device_ids.get(self._mac_id),
         )
 
     @property

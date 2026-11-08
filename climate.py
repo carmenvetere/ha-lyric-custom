@@ -224,6 +224,11 @@ async def async_setup_entry(
     )
 
 
+# Home Assistant 2026.11 renamed the climate temperature properties to native_*
+# (the old names stop working in 2027.11). Older releases only know the old names.
+NATIVE_TEMPERATURE_PROPERTIES = hasattr(ClimateEntity, "native_temperature_unit")
+
+
 class LyricThermostatType(enum.Enum):
     """Lyric thermostats are classified as TCC or LCC devices."""
 
@@ -263,11 +268,15 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
 
         # Use the native temperature unit from the device settings
         if device.units == "Fahrenheit":
-            self._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
+            unit = UnitOfTemperature.FAHRENHEIT
             self._attr_precision = PRECISION_WHOLE
         else:
-            self._attr_temperature_unit = UnitOfTemperature.CELSIUS
+            unit = UnitOfTemperature.CELSIUS
             self._attr_precision = PRECISION_HALVES
+        if NATIVE_TEMPERATURE_PROPERTIES:
+            self._attr_native_temperature_unit = unit
+        else:
+            self._attr_temperature_unit = unit
 
         # Setup supported hvac modes
         self._attr_hvac_modes = [HVACMode.OFF]
@@ -318,7 +327,7 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
         return f"{self.device.mac_id}_thermostat_test"
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         """Return the current temperature."""
         return self.device.indoor_temperature
 
@@ -342,7 +351,7 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
         return self.device.changeable_values.thermostat_setpoint_status
 
     @property
-    def target_temperature(self) -> float | None:
+    def native_target_temperature(self) -> float | None:
         """Return the temperature we try to reach."""
         device = self.device
         if (
@@ -355,7 +364,7 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
         return device.changeable_values.heat_setpoint
 
     @property
-    def target_temperature_high(self) -> float | None:
+    def native_target_temperature_high(self) -> float | None:
         """Return the highbound target temperature we try to reach."""
         device = self.device
         if (
@@ -366,7 +375,7 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
         return device.changeable_values.cool_setpoint
 
     @property
-    def target_temperature_low(self) -> float | None:
+    def native_target_temperature_low(self) -> float | None:
         """Return the lowbound target temperature we try to reach."""
         device = self.device
         if (
@@ -673,3 +682,13 @@ class LyricClimate(LyricDeviceEntity, ClimateEntity):
         except LYRIC_EXCEPTIONS as exception:
             _LOGGER.error("Failed to set room priority: %s", exception)
 
+
+if not NATIVE_TEMPERATURE_PROPERTIES:
+    # Serve the native_* properties under the names older releases read.
+    for _old, _new in (
+        ("current_temperature", "native_current_temperature"),
+        ("target_temperature", "native_target_temperature"),
+        ("target_temperature_high", "native_target_temperature_high"),
+        ("target_temperature_low", "native_target_temperature_low"),
+    ):
+        setattr(LyricClimate, _old, getattr(LyricClimate, _new))
