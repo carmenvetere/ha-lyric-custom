@@ -28,6 +28,7 @@ from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.entity_component import DATA_INSTANCES
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
@@ -402,11 +403,13 @@ class ScheduleSyncManager:
         state.error = message
 
     async def _async_get_ha_schedule(self, entity_id: str) -> dict[str, Any]:
-        state = self.hass.states.get(entity_id)
-        if state is None or state.attributes.get("restored"):
+        component = self.hass.data.get(DATA_INSTANCES, {}).get("schedule")
+        if component is None or component.get_entity(entity_id) is None:
+            # Not loaded right now: deleted, or its configuration failed to load.
+            # Checking first avoids a service-call warning every minute.
             raise ScheduleError(
-                "this schedule helper doesn't exist (it may have been deleted); "
-                "pick another in the thermostat's Schedule source"
+                "this schedule helper isn't loaded in Home Assistant (deleted, or "
+                "its configuration failed to load); nothing is sent until it's back"
             )
         response = await self.hass.services.async_call(
             "schedule",
